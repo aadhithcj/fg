@@ -1,0 +1,8 @@
+# GUI + build (installed by "Build FF Downloader.bat"). Versions the working .exe was built with.
+requests==2.34.2
+tqdm==4.70.1
+curl_cffi==0.17.0
+pywebview==6.2.1
+pyinstaller==6.22.3
+# CLI browser mode only, not bundled in the .exe:
+#   pip install playwright==1.64.1 && python -m playwright install chromium
