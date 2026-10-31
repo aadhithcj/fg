@@ -6,8 +6,11 @@ Download manager + app for fuckingfast.co links (FitGirl repacks). Built with Cl
 - `ffdl.py` - core downloader / command-line tool. Also imported by the GUI, so both must sit together to rebuild.
 - `ffdl_gui.py` - local web UI served from a small Python server, shown in a native window via pywebview (falls back to the default browser). Downloads go through `ffdl.download_item()`, the same code the CLI uses. API calls need the per-launch token baked into the page. The last download folder is remembered in `~/.ffdl/gui.json` (default `~/Downloads`).
 - `requirements.txt` - pinned versions the build installs.
-- `Build FF Downloader.bat` - run once; installs deps, builds `FF Downloader.exe` with PyInstaller, makes a desktop shortcut. Excludes torch/scipy/pandas/etc. so the exe stays small.
-- The finished `FF Downloader.exe` is self-contained; share only that file (friends may need Microsoft WebView2 and must click "Run anyway" in SmartScreen).
+- `Build FF Downloader.bat` - installs deps, builds `FF Downloader.exe` with PyInstaller (excludes torch/scipy/pandas/etc. so it stays small), then `FF Downloader Setup.exe` with Inno Setup 6 if installed (`winget install JRSoftware.InnoSetup`).
+- `installer.iss` - Inno Setup script: per-user install (no admin) to `%LOCALAPPDATA%\Programs\FF Downloader`, Start menu + optional desktop shortcut, uninstaller in Windows Settings. Bump `AppVersion` for new releases; keep `AppId` unchanged so updates replace the old install.
+- `make_icon.py` / `icon.ico` - the app icon (violet download arrow), used by the exe and the setup.
+- Share `FF Downloader Setup.exe` (or the self-contained `FF Downloader.exe`). Friends may need Microsoft WebView2 (built into Windows 11) and must click "More info > Run anyway" in SmartScreen since it's unsigned.
+- GUI Cancel stops downloads and deletes this download's files (finished parts and `.part`/`.part.json`), then removes the folder only if it is empty; unrelated files are never touched.
 
 ## How it works
 1. FitGirl page is scanned for `https://fuckingfast.co/<id>#<filename>` links (title from `<h1 class="entry-title">`). Files named `*optional*` / `*selective*` are grouped separately and unticked by default.

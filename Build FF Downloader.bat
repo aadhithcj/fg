@@ -2,18 +2,27 @@
 title Building FF Downloader
 cd /d "%~dp0"
 rmdir /s /q build >nul 2>nul
-echo Building FF Downloader - this takes 2-3 minutes, only needed once.
+echo Building FF Downloader - this takes 2-3 minutes.
 echo.
 where python >nul 2>nul || (where py >nul 2>nul && (set PY=py) || (echo Python is not installed. Get it from python.org and tick "Add Python to PATH". & pause & exit /b))
 if not defined PY set PY=python
 %PY% -m pip install -r requirements.txt || (echo Install failed. & pause & exit /b)
-%PY% -m PyInstaller --noconfirm --onefile --windowed --name "FF Downloader" --collect-all curl_cffi --collect-submodules webview.platforms.winforms --collect-submodules webview.platforms.edgechromium --collect-data webview --exclude-module torch --exclude-module torchvision --exclude-module scipy --exclude-module pandas --exclude-module numpy --exclude-module matplotlib --exclude-module PIL --exclude-module pytest --exclude-module jinja2 --exclude-module IPython --exclude-module notebook --exclude-module tensorflow --exclude-module sklearn --exclude-module cv2 --exclude-module pygments --exclude-module sympy ffdl_gui.py || (echo Build failed. & pause & exit /b)
+if not exist icon.ico %PY% make_icon.py
+%PY% -m PyInstaller --noconfirm --onefile --windowed --name "FF Downloader" --icon icon.ico --collect-all curl_cffi --collect-submodules webview.platforms.winforms --collect-submodules webview.platforms.edgechromium --collect-data webview --exclude-module torch --exclude-module torchvision --exclude-module scipy --exclude-module pandas --exclude-module numpy --exclude-module matplotlib --exclude-module PIL --exclude-module pytest --exclude-module jinja2 --exclude-module IPython --exclude-module notebook --exclude-module tensorflow --exclude-module sklearn --exclude-module cv2 --exclude-module pygments --exclude-module sympy ffdl_gui.py || (echo Build failed. & pause & exit /b)
 copy /y "dist\FF Downloader.exe" "%~dp0FF Downloader.exe" >nul
-powershell -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\FF Downloader.lnk');$s.TargetPath='%~dp0FF Downloader.exe';$s.WorkingDirectory='%~dp0';$s.Save()"
 rmdir /s /q build >nul 2>nul
 rmdir /s /q dist >nul 2>nul
 del /q "FF Downloader.spec" >nul 2>nul
-echo.
-echo Done! "FF Downloader" is on your desktop. Opening it now...
-start "" "%~dp0FF Downloader.exe"
-timeout /t 4 >nul
+
+rem Setup file for sharing (needs Inno Setup 6: winget install JRSoftware.InnoSetup)
+set ISCC=
+for %%P in ("%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" "%ProgramFiles%\Inno Setup 6\ISCC.exe") do if exist %%P set ISCC=%%P
+if defined ISCC (
+    %ISCC% /Q installer.iss || (echo Setup build failed. & pause & exit /b)
+    echo.
+    echo Done! Share "FF Downloader Setup.exe" with your friends.
+) else (
+    echo.
+    echo Done! Built "FF Downloader.exe". Install Inno Setup 6 to also get "FF Downloader Setup.exe".
+)
+pause
