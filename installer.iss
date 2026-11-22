@@ -1,9 +1,9 @@
-; Inno Setup script for "FF Downloader Setup.exe". Built by "Build FF Downloader.bat".
-; Installs per user (no admin prompt) into %LOCALAPPDATA%\Programs\FF Downloader.
+; Inno Setup script for "FG Downloader Setup.exe". Built by "Build FG Downloader.bat".
+; Installs per user (no admin prompt) into %LOCALAPPDATA%\Programs\FG Downloader.
 
-#define AppName "FF Downloader"
+#define AppName "FG Downloader"
 #define AppVersion "1.1.0"
-#define AppExe "FF Downloader.exe"
+#define AppExe "FG Downloader.exe"
 
 [Setup]
 ; keep AppId the same in future versions so updates replace the old install

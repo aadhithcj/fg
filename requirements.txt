@@ -1,4 +1,4 @@
-# GUI + build (installed by "Build FF Downloader.bat"). Versions the working .exe was built with.
+# GUI + build (installed by "Build FG Downloader.bat"). Versions the working .exe was built with.
 requests==2.34.2
 tqdm==4.70.1
 curl_cffi==0.17.0

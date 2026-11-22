@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ffdl - multi-threaded segmented file downloader
+fgdl - multi-threaded segmented file downloader
 
 Features
   * Accepts direct host links, a text/HTML file containing them, or a page URL
@@ -14,9 +14,9 @@ Setup
   python -m playwright install chromium
 
 Usage
-  python ffdl.py -i links.txt -o .
-  python ffdl.py -i links.txt -o D:/Downloads
-  python ffdl.py --browser -i links.txt -o .       # skip fast mode, use the browser
+  python fgdl.py -i links.txt -o .
+  python fgdl.py -i links.txt -o D:/Downloads
+  python fgdl.py --browser -i links.txt -o .       # skip fast mode, use the browser
 """
 import argparse
 import html as htmllib
@@ -47,7 +47,14 @@ PAGE_RE = re.compile(r"https?://fuckingfast\.co/(?!dl/)[A-Za-z0-9]+(?:#[^\s\"'<>
 DN_RE = re.compile(r"https?://(?:www\.)?datanodes\.to/(?!download(?:/|$))[A-Za-z0-9]+(?:/[^\s\"'<>]*)?")
 OTHER_URL_RE = re.compile(r"https?://(?!(?:www\.)?(?:fuckingfast\.co|datanodes\.to))[^\s\"'<>]+")
 TITLE_RE = re.compile(r"<title>(.*?)</title>", re.I | re.S)
-STATE_DIR = Path.home() / ".ffdl"
+STATE_DIR = Path.home() / ".fgdl"
+_LEGACY_DIR = Path.home() / ".ffdl"
+if not STATE_DIR.exists() and _LEGACY_DIR.exists():
+    try:
+        import shutil
+        shutil.copytree(_LEGACY_DIR, STATE_DIR)
+    except Exception:
+        pass
 SESSION_FILE = STATE_DIR / "session.json"
 PROFILE_DIR = STATE_DIR / "browser-profile"
 CHUNK = 1 << 20

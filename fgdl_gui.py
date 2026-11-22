@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-FF Downloader - web UI for ffdl.py
+FG Downloader - web UI for fgdl.py
 
-Run:   python ffdl_gui.py      (keep ffdl.py in the same folder)
+Run:   python fgdl_gui.py      (keep fgdl.py in the same folder)
 Opens a local page (random port) in an app window, or in your browser.
 """
 import json
@@ -18,13 +18,16 @@ from pathlib import Path
 
 if sys.stdout is None:  # windowed .exe has no console
     sys.stdout = sys.stderr = open(os.devnull, "w")
-import ffdl
+try:
+    import fgdl
+except ImportError:
+    import ffdl as fgdl
 
 PORT = 0                            # set in main()
 TOKEN = secrets.token_urlsafe(16)   # the page sends it back on every API call
-SETTINGS_FILE = ffdl.STATE_DIR / "gui.json"
+SETTINGS_FILE = fgdl.STATE_DIR / "gui.json"
 DEFAULT_BASE = Path.home() / "Downloads"
-sess = ffdl.Session()
+sess = fgdl.Session()
 
 
 def load_settings():
@@ -36,7 +39,7 @@ def load_settings():
 
 def save_settings(**kw):
     try:
-        ffdl.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        fgdl.STATE_DIR.mkdir(parents=True, exist_ok=True)
         SETTINGS_FILE.write_text(json.dumps({**load_settings(), **kw}, indent=1))
     except OSError:
         pass
@@ -46,16 +49,16 @@ def save_settings(**kw):
 def scan(text):
     # links pasted back to back (no line break between them) get split apart again
     text = re.sub(r"(?<=\S)(?=https?://)", "\n", text.strip())
-    if ffdl.PAGE_RE.search(text) or ffdl.DN_RE.search(text):
+    if fgdl.PAGE_RE.search(text) or fgdl.DN_RE.search(text):
         title = "Links"
     else:
         r = sess.s.get(text, timeout=30)
         r.raise_for_status()
         text = r.text
-        t = re.search(r'<h1 class="entry-title">(.*?)</h1>', text, re.S) or ffdl.TITLE_RE.search(text)
-        title = re.sub(r"<[^>]+>", "", ffdl.htmllib.unescape(t.group(1))).strip() if t else "Download"
+        t = re.search(r'<h1 class="entry-title">(.*?)</h1>', text, re.S) or fgdl.TITLE_RE.search(text)
+        title = re.sub(r"<[^>]+>", "", fgdl.htmllib.unescape(t.group(1))).strip() if t else "Download"
         title = re.sub(r"\s*[-–]\s*.*$", "", title).strip() or title
-    flat = ffdl.htmllib.unescape(text)
+    flat = fgdl.htmllib.unescape(text)
     entries, order, seen = {}, [], set()
     unnamed_ff = False
 
@@ -63,8 +66,8 @@ def scan(text):
         low = name.lower()
         return "optional" if "optional" in low else ("selective" if "selective" in low else "main")
 
-    for m in ffdl.PAGE_RE.findall(flat):
-        it = ffdl.Item(m)
+    for m in fgdl.PAGE_RE.findall(flat):
+        it = fgdl.Item(m)
         if it.page in seen:
             continue
         seen.add(it.page)
@@ -76,8 +79,8 @@ def scan(text):
         entries[key] = {"page": m, "name": name, "kind": kind_of(name), "alt": ""}
         order.append(key)
 
-    for m in ffdl.DN_RE.findall(flat):
-        it = ffdl.Item(m)
+    for m in fgdl.DN_RE.findall(flat):
+        it = fgdl.Item(m)
         if it.page in seen:
             continue
         seen.add(it.page)
@@ -96,15 +99,15 @@ def scan(text):
     folder = re.sub(r'[<>:"/\\|?*]', "", title).strip()[:80] or "Download"
     out = Path(load_settings().get("base") or DEFAULT_BASE) / folder
     mirrors = {
-        "fuckingfast": sum(1 for f in files if ffdl.is_ff(f["page"])),
-        "datanodes": sum(1 for f in files if ffdl.is_dn(f["page"]) or f["alt"]),
+        "primary": sum(1 for f in files if fgdl.is_ff(f["page"])),
+        "mirror": sum(1 for f in files if fgdl.is_dn(f["page"]) or f["alt"]),
     }
     return {"title": title, "files": files, "out": str(out), "mirrors": mirrors}
 
 
 # --------------------------------------------------------------------------- engine
 class Progress:
-    """Stands in for ffdl's tqdm bar: progress goes into the file's status dict."""
+    """Stands in for fgdl's tqdm bar: progress goes into the file's status dict."""
     def __init__(self, f, total, done):
         self.f = f
         f["total"], f["done"] = total or 0, done
@@ -163,19 +166,19 @@ class Engine:
                 try:
                     self.one(f)
                     break
-                except ffdl.NeedBrowser:
+                except fgdl.NeedBrowser:
                     if self.mirror and f.get("alt") and not f.get("_use_alt"):
-                        f["_use_alt"], f["status"] = True, "retrying via datanodes"
+                        f["_use_alt"], f["status"] = True, "retrying via mirror"
                         continue
                     f["status"] = "failed"
-                    f["error"] = "Blocked by Cloudflare - try again later, or use ffdl.py --browser"
+                    f["error"] = "Blocked by challenge - try again later, or use fgdl.py --browser"
                     break
                 except Exception as e:
                     if self.stop.is_set():
                         break
                     f["error"] = str(e)
                     if self.mirror and f.get("alt") and not f.get("_use_alt"):
-                        f["_use_alt"], f["status"] = True, "retrying via datanodes"
+                        f["_use_alt"], f["status"] = True, "retrying via mirror"
                         continue
                     if "not found" in str(e) or attempt == 5:
                         f["status"] = "failed"
@@ -190,22 +193,21 @@ class Engine:
     def one(self, f):
         out = Path(self.out)
         use_alt = bool(f.get("_use_alt"))
-        item = ffdl.Item(f["alt"] if use_alt else f["page"])
+        item = fgdl.Item(f["alt"] if use_alt else f["page"])
         if use_alt and f.get("name"):
-            item.name = ffdl.safe_name(f["name"]) or item.name
+            item.name = fgdl.safe_name(f["name"]) or item.name
         f["status"] = "getting link"
-        # a datanodes block must not poison the fuckingfast session (or the reverse)
         s = sess
         if use_alt:
             if self.dn_sess is None:
-                self.dn_sess = ffdl.Session()
+                self.dn_sess = fgdl.Session()
             s = self.dn_sess
 
         def make_bar(total, done):
             f["name"], f["status"] = item.name or f["name"], "downloading"
             return Progress(f, total, done)
 
-        status = ffdl.download_item(s, item, out, self.conns, make_bar, self.stop)
+        status = fgdl.download_item(s, item, out, self.conns, make_bar, self.stop)
         f["name"] = item.name or f["name"]
         if status == "skipped (exists)":
             f["status"] = "skipped"
@@ -227,7 +229,7 @@ class Engine:
             self.thread.join(timeout=120)
         out, deleted = Path(self.out), 0
         for f in self.files:
-            name = ffdl.safe_name(f["name"])
+            name = fgdl.safe_name(f["name"])
             if not name or not name.strip(". "):
                 continue
             for p in (out / name, out / (name + ".part"), out / (name + ".part.json")):
@@ -333,7 +335,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/scan":
                 return self.send(200, json.dumps(scan(body["url"])))
             if self.path == "/api/start":
-                if not all(ffdl.is_supported(f["page"]) and (not f.get("alt") or ffdl.is_dn(f["alt"]))
+                if not all(fgdl.is_supported(f["page"]) and (not f.get("alt") or fgdl.is_dn(f["alt"]))
                            for f in body["files"]):
                     raise ValueError("Only supported host links can be downloaded.")
                 engine.start(body["files"], body["out"], body.get("conns", 8), body.get("title", ""),
@@ -384,7 +386,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FF Downloader</title>
+<title>FG Downloader</title>
 <style>
 :root{
 --ui:'Bahnschrift','DIN Alternate','Franklin Gothic Medium','Segoe UI',system-ui,sans-serif;
@@ -634,7 +636,7 @@ border:1px solid var(--line);font:600 9.5px/1.5 var(--mono);letter-spacing:.04em
 <header class="topbar">
   <div class="brand">
     <span class="brand-block">FG</span>
-    <span class="brand-note">FF Downloader</span>
+    <span class="brand-note">FG Downloader</span>
   </div>
   <div class="top-right">
     <span class="hostnote">Desktop app</span>
@@ -664,8 +666,8 @@ border:1px solid var(--line);font:600 9.5px/1.5 var(--mono);letter-spacing:.04em
 
       <section class="block" id="hostBlock">
         <div class="micro">Hosts</div>
-        <div class="kv"><span>Primary Host</span><b id="mFF">—</b></div>
-        <div class="kv"><span>Mirror Host</span><b id="mDN">—</b></div>
+        <div class="kv"><span>Primary Host</span><b id="mPrimary">—</b></div>
+        <div class="kv"><span>Mirror Host</span><b id="mMirror">—</b></div>
         <label class="checkline" for="mirror">
           <input type="checkbox" id="mirror" onchange="setMirror()"__MIRROR__>
           <span class="box" aria-hidden="true"></span>
@@ -829,8 +831,8 @@ async function doScan(){
     sel=new Set(files.filter(f=>f.kind!=='optional').map(f=>f.page));
     $('gtitle').textContent=d.title||'Links';
     $('out').value=d.out||'';
-    $('mFF').textContent=d.mirrors?d.mirrors.fuckingfast:0;
-    $('mDN').textContent=d.mirrors?d.mirrors.datanodes:0;
+    $('mPrimary').textContent=d.mirrors?d.mirrors.primary:0;
+    $('mMirror').textContent=d.mirrors?d.mirrors.mirror:0;
     $('gsub').textContent=`${files.length} part${files.length===1?'':'s'} · ${sel.size} selected`;
     intro=true;
     await poll();
@@ -844,8 +846,8 @@ async function doScan(){
 
 /* ------------------------------------------------------------------ manifest */
 function mirrorLabel(f){
-  if(f.alt)return'FF+DN';
-  return /datanodes\.to/i.test(f.page)?'DN':'FF';
+  if(f.alt)return'PRI+MIR';
+  return /datanodes\.to/i.test(f.page)?'MIR':'PRI';
 }
 function rowHtml(f,i,n,anim){
   return `<tr class="frow ${anim?'intro':''} ${sel.has(f.page)?'on':''}" style="--i:${i}" onclick="rowTog(event,${i})">
@@ -910,7 +912,7 @@ async function clearAll(){
   try{await post('clear')}catch(e){}
   files=[];sel.clear();title='';
   $('gtitle').textContent='No source';$('gsub').textContent='Paste a link to load a manifest';
-  $('mFF').textContent='—';$('mDN').textContent='—';$('startErr').textContent='';
+  $('mPrimary').textContent='—';$('mMirror').textContent='—';$('startErr').textContent='';
   await poll();
 }
 async function browse(){try{const d=await post('browse');if(d.path)$('out').value=d.path.replace(/\//g,'\\')}catch(e){}}
@@ -933,7 +935,7 @@ function statusInfo(f){
   let cls='queued',label='Queued';
   if(key==='downloading'){cls='active';label=`Active ${Math.floor(pc)}%`}
   else if(key==='getting'){cls='link';label='Link'}
-  else if(key==='retrying'){cls='retry';label=f.status.includes('datanodes')?'Via DN':'Retry'}
+  else if(key==='retrying'){cls='retry';label=f.status.includes('mirror')||f.status.includes('datanodes')?'Via Mirror':'Retry'}
   else if(key==='paused'){cls='paused';label='Paused'}
   else if(key==='failed'){cls='failed';label='Failed'}
   else if(key==='done'){cls='done';label='Done'}
@@ -957,7 +959,7 @@ function renderTransfer(s){
         <div class="minibar"><i style="width:${st.pc}%"></i></div>
         ${f.error&&f.status==='failed'?`<div class="rowerr">${esc(f.error)}</div>`:''}</td>
       <td class="c-kind">${kindName(f.kind||'main')}</td>
-      <td class="c-mirror">${via?'DN':(f.mirror?'FF+DN':'FF')}</td>
+      <td class="c-mirror">${via?'MIR':(f.mirror?'PRI+MIR':'PRI')}</td>
       <td class="c-state"><span class="stamp ${st.cls}">${st.label}</span></td>
     </tr>`;
   });
@@ -1052,7 +1054,7 @@ def main():
     url = f"http://127.0.0.1:{PORT}"
     try:
         import webview  # pywebview: real app window
-        webview.create_window("FF Downloader", url, width=1080, height=860, min_size=(640, 600),
+        webview.create_window("FG Downloader", url, width=1080, height=860, min_size=(640, 600),
                               background_color="#0b0d10")
         webview.start()
     except Exception:

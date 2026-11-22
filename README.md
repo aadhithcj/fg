@@ -1,8 +1,8 @@
-# FF Downloader
+# FG Downloader
 
 A high-performance, resumable, multi-threaded parallel download manager with a modern desktop UI.
 
-FF Downloader accelerates large file downloads using concurrent HTTP Range segments, automatic mirror failover, and persistent resume state.
+FG Downloader accelerates large file downloads using concurrent HTTP Range segments, automatic mirror failover, and persistent resume state.
 
 ---
 
@@ -25,8 +25,8 @@ FF Downloader accelerates large file downloads using concurrent HTTP Range segme
 
 ### Setup
 ```bash
-git clone https://github.com/your-username/ff-downloader.git
-cd ff-downloader
+git clone https://github.com/your-username/fg-downloader.git
+cd fg-downloader
 pip install -r requirements.txt
 ```
 
@@ -37,7 +37,7 @@ pip install -r requirements.txt
 ### Desktop GUI
 Launch the application window:
 ```bash
-python ffdl_gui.py
+python fgdl_gui.py
 ```
 1. Paste a download page URL or direct host links into the source bar.
 2. Click **Fetch Files** to inspect the manifest and verify the file list.
@@ -47,7 +47,7 @@ python ffdl_gui.py
 ### Command Line Interface (CLI)
 Download from a list of links or a supported page:
 ```bash
-python ffdl.py -i links.txt -o ./downloads -c 8
+python fgdl.py -i links.txt -o ./downloads -c 8
 ```
 
 Options:
@@ -61,11 +61,11 @@ Options:
 
 ## Building Executables
 
-To build a standalone Windows executable (`FF Downloader.exe`):
+To build a standalone Windows executable (`FG Downloader.exe`):
 ```bat
-Build FF Downloader.bat
+Build FG Downloader.bat
 ```
-This packages the Python application with PyInstaller. If [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed, it also generates `FF Downloader Setup.exe`.
+This packages the Python application with PyInstaller. If [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed, it also generates `FG Downloader Setup.exe`.
 
 ---
 
