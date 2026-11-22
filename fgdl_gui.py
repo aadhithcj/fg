@@ -7,6 +7,7 @@ Opens a local page (random port) in an app window, or in your browser.
 """
 import json
 import os
+import random
 import sys
 import re
 import secrets
@@ -27,7 +28,79 @@ PORT = 0                            # set in main()
 TOKEN = secrets.token_urlsafe(16)   # the page sends it back on every API call
 SETTINGS_FILE = fgdl.STATE_DIR / "gui.json"
 DEFAULT_BASE = Path.home() / "Downloads"
-sess = fgdl.Session()
+
+
+def _extract_webview_cookies(raw_cookies):
+    """Convert pywebview SimpleCookie list into fgdl's session.json format."""
+    out = []
+    for sc in raw_cookies or []:
+        if isinstance(sc, dict):
+            domain = sc.get("domain", "")
+            if "fuckingfast" in domain or "datanodes" in domain:
+                out.append({
+                    "name": sc["name"],
+                    "value": sc["value"],
+                    "domain": domain,
+                    "path": sc.get("path") or "/",
+                })
+            continue
+        for name, morsel in sc.items():
+            domain = morsel["domain"] or ""
+            if "fuckingfast" in domain or "datanodes" in domain:
+                out.append({
+                    "name": name,
+                    "value": morsel.value,
+                    "domain": domain,
+                    "path": morsel["path"] or "/",
+                })
+    return out
+
+
+def solve_challenge_webview(url, timeout=180):
+    """Pop open a small WebView2 window to clear Cloudflare Turnstile and capture cookies."""
+    try:
+        import webview
+        if not webview.windows:
+            return None
+    except Exception:
+        return None
+
+    closed = threading.Event()
+    win = webview.create_window(
+        "Complete Cloudflare Check",
+        url,
+        width=520,
+        height=640,
+        resizable=True,
+        on_top=True,
+    )
+    win.events.closed += lambda: closed.set()
+
+    deadline = time.time() + timeout
+    time.sleep(2.0)  # let initial navigation start
+    try:
+        while time.time() < deadline and not closed.is_set() and not engine.stop.is_set():
+            try:
+                title = win.evaluate_js("document.title") or ""
+                body = win.evaluate_js("document.documentElement ? document.documentElement.innerHTML.slice(0, 20000) : ''") or ""
+                if title and not fgdl._looks_like_challenge(title, body):
+                    ua = win.evaluate_js("navigator.userAgent") or fgdl.CHROME_UA
+                    cookies = _extract_webview_cookies(win.get_cookies())
+                    if cookies:
+                        return {"user_agent": ua, "cookies": cookies}
+            except Exception:
+                pass
+            time.sleep(1.5)
+        return None
+    finally:
+        if not closed.is_set():
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+
+sess = fgdl.Session(challenge_solver=solve_challenge_webview)
 
 
 def load_settings():
@@ -146,10 +219,14 @@ class Engine:
         Path(out).mkdir(parents=True, exist_ok=True)
         self.out, self.conns, self.msg, self.title = out, max(1, int(conns)), "", title
         self.mirror = bool(mirror)
+        sess.blocked = False
+        if self.dn_sess:
+            self.dn_sess.blocked = False
         save_settings(base=str(Path(out).parent), conns=self.conns, mirror=self.mirror)
-        self.files = [{"page": f["page"], "alt": f.get("alt", ""), "name": f["name"], "kind": f.get("kind", "main"),
-                       "status": "queued", "done": 0, "total": 0, "error": "", "speed": 0.0, "_s": []}
-                      for f in files]
+        with self.lock:
+            self.files = [{"page": f["page"], "alt": f.get("alt", ""), "name": f["name"], "kind": f.get("kind", "main"),
+                           "status": "queued", "done": 0, "total": 0, "error": "", "speed": 0.0, "_s": []}
+                          for f in files]
         self.stop.clear()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -157,7 +234,8 @@ class Engine:
     def run(self):
         # pick the next queued file each time, so files re-queued while running get done too
         while not self.stop.is_set():
-            f = next((f for f in self.files if f["status"] == "queued"), None)
+            with self.lock:
+                f = next((f for f in self.files if f["status"] == "queued"), None)
             if f is None:
                 break
             for attempt in range(1, 6):
@@ -165,13 +243,15 @@ class Engine:
                     break
                 try:
                     self.one(f)
+                    if not self.stop.is_set():
+                        self.stop.wait(random.uniform(0.8, 1.8))
                     break
-                except fgdl.NeedBrowser:
+                except fgdl.NeedBrowser as e:
                     if self.mirror and f.get("alt") and not f.get("_use_alt"):
                         f["_use_alt"], f["status"] = True, "retrying via mirror"
                         continue
                     f["status"] = "failed"
-                    f["error"] = "Blocked by challenge - try again later, or use fgdl.py --browser"
+                    f["error"] = str(e) or "Blocked by challenge - try again later, or use fgdl.py --browser"
                     break
                 except Exception as e:
                     if self.stop.is_set():
@@ -185,9 +265,10 @@ class Engine:
                         break
                     f["status"] = f"retrying ({attempt}/4)"
                     self.stop.wait(5 * attempt)
-        for f in self.files:
-            if self.stop.is_set() and f["status"] not in ("done", "skipped", "failed"):
-                f["status"] = "paused"
+        with self.lock:
+            for f in self.files:
+                if self.stop.is_set() and f["status"] not in ("done", "skipped", "failed"):
+                    f["status"] = "paused"
         self.msg = "Paused - press Resume to continue" if self.stop.is_set() else "All done"
 
     def one(self, f):
@@ -200,7 +281,7 @@ class Engine:
         s = sess
         if use_alt:
             if self.dn_sess is None:
-                self.dn_sess = fgdl.Session()
+                self.dn_sess = fgdl.Session(challenge_solver=solve_challenge_webview)
             s = self.dn_sess
 
         def make_bar(total, done):
@@ -228,7 +309,9 @@ class Engine:
         if self.thread:
             self.thread.join(timeout=120)
         out, deleted = Path(self.out), 0
-        for f in self.files:
+        with self.lock:
+            files_snapshot = list(self.files)
+        for f in files_snapshot:
             name = fgdl.safe_name(f["name"])
             if not name or not name.strip(". "):
                 continue
@@ -246,14 +329,17 @@ class Engine:
             where = " and the folder"
         except OSError:
             where = ". The folder was kept because other files are in it" if out.exists() else ""
-        self.files = []
+        with self.lock:
+            self.files = []
         self.msg = f"Cancelled - deleted {deleted} file{'s' * (deleted != 1)}{where}."
         self.cancelling = False
 
     def status(self):
         now = time.time()
         out, tot_done, tot_all, speed = [], 0, 0, 0.0
-        for f in self.files:
+        with self.lock:
+            files_snapshot = list(self.files)
+        for f in files_snapshot:
             s = f["_s"]
             s.append((now, f["done"]))
             while len(s) > 2 and now - s[0][0] > 5:
@@ -274,6 +360,16 @@ engine = Engine()
 
 
 def browse_folder():
+    try:
+        import webview
+        if webview.windows:
+            dlg = webview.FileDialog.FOLDER if hasattr(webview, "FileDialog") else webview.FOLDER_DIALOG
+            res = webview.windows[0].create_file_dialog(dlg)
+            if res:
+                return res[0] if isinstance(res, (list, tuple)) else str(res)
+            return ""
+    except Exception:
+        pass
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -343,7 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, "{}")
             if self.path == "/api/clear":
                 if not engine.running and not engine.cancelling:
-                    engine.files, engine.msg = [], ""
+                    with engine.lock:
+                        engine.files = []
+                    engine.msg = ""
                 return self.send(200, "{}")
             if self.path == "/api/theme":
                 save_settings(theme="light" if body.get("theme") == "light" else "dark")
@@ -360,10 +458,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/resume":
                 if engine.cancelling:
                     return self.send(200, "{}")
+                sess.blocked = False
+                if engine.dn_sess:
+                    engine.dn_sess.blocked = False
                 running = engine.running
-                for f in engine.files:
-                    if f["status"] == "failed" or (not running and f["status"] not in ("done", "skipped")):
-                        f["status"], f["error"] = "queued", ""
+                with engine.lock:
+                    for f in engine.files:
+                        if f["status"] == "failed" or (not running and f["status"] not in ("done", "skipped")):
+                            f["status"], f["error"] = "queued", ""
+                            f.pop("_use_alt", None)
                 if not running:
                     engine.stop.clear()
                     engine.msg = ""
@@ -828,7 +931,7 @@ async function doScan(){
     const d=await post('scan',{url:$('url').value});
     if(last&&!busy()){try{await post('clear')}catch(e){}}
     files=d.files||[];title=d.title||'';
-    sel=new Set(files.filter(f=>f.kind!=='optional').map(f=>f.page));
+    sel=new Set(files.filter(f=>f.kind==='main'||(f.kind==='selective'&&/english/i.test(f.name))).map(f=>f.page));
     $('gtitle').textContent=d.title||'Links';
     $('out').value=d.out||'';
     $('mPrimary').textContent=d.mirrors?d.mirrors.primary:0;

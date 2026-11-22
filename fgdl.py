@@ -120,7 +120,7 @@ def wait_past_challenge(page, timeout=300):
 
 # --------------------------------------------------------------------------- session
 class Session:
-    def __init__(self, channel=None):
+    def __init__(self, channel=None, challenge_solver=None):
         self.s = http.Session(impersonate="chrome") if HAVE_CFFI else http.Session()
         self.ua = CHROME_UA
         self.s.headers.update({"User-Agent": self.ua, "Accept-Language": "en-US,en;q=0.9"})
@@ -128,6 +128,7 @@ class Session:
         self.gen = 0
         self.blocked = False   # True once a fresh browser session still doesn't work
         self.channel = channel
+        self.challenge_solver = challenge_solver
         if SESSION_FILE.exists():
             try:
                 self._apply(json.loads(SESSION_FILE.read_text()))
@@ -168,24 +169,29 @@ class Session:
         with self.lock:
             if seen_gen != self.gen or self.blocked:
                 return  # another thread already handled it
-            try:
-                sync_playwright = require_playwright()
-            except NoPlaywright:
-                self.blocked = True
-                tqdm.write("\n>> Cloudflare check needed, but playwright isn't installed to open a browser.\n")
-                return
-            tqdm.write("\n>> Cloudflare check: a browser window is opening. Complete the check there; "
-                       "it closes by itself.\n")
-            with sync_playwright() as p:
-                ctx = launch_browser(p, self.channel)
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto(url, wait_until="domcontentloaded")
-                wait_past_challenge(page)
-                ua = page.evaluate("navigator.userAgent")
-                cookies = [{k: c[k] for k in ("name", "value", "domain", "path")}
-                           for c in ctx.cookies() if "fuckingfast" in c["domain"] or "datanodes" in c["domain"]]
-                ctx.close()
-            data = {"user_agent": ua, "cookies": cookies}
+            data = None
+            if self.challenge_solver:
+                data = self.challenge_solver(url)
+                if not data:
+                    raise NeedBrowser("Cloudflare check was cancelled or timed out")
+            else:
+                try:
+                    sync_playwright = require_playwright()
+                except NoPlaywright:
+                    tqdm.write("\n>> Cloudflare check needed, but playwright isn't installed to open a browser.\n")
+                    raise NeedBrowser("Blocked by Cloudflare challenge - try again later, or use fgdl.py --browser")
+                tqdm.write("\n>> Cloudflare check: a browser window is opening. Complete the check there; "
+                           "it closes by itself.\n")
+                with sync_playwright() as p:
+                    ctx = launch_browser(p, self.channel)
+                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                    page.goto(url, wait_until="domcontentloaded")
+                    wait_past_challenge(page)
+                    ua = page.evaluate("navigator.userAgent")
+                    cookies = [{k: c[k] for k in ("name", "value", "domain", "path")}
+                               for c in ctx.cookies() if "fuckingfast" in c["domain"] or "datanodes" in c["domain"]]
+                    ctx.close()
+                data = {"user_agent": ua, "cookies": cookies}
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             SESSION_FILE.write_text(json.dumps(data, indent=1))
             self._apply(data)
@@ -194,8 +200,7 @@ class Session:
             test = self.s.get(url, timeout=30)
             if is_challenge(test):
                 self.blocked = True
-                tqdm.write(">> Cloudflare still blocks the script. Switching to browser mode for "
-                           "the remaining files once the current ones stop.\n")
+                tqdm.write(">> Cloudflare still blocks the script.\n")
             else:
                 tqdm.write(">> Passed. Continuing.\n")
             test.close()
@@ -219,7 +224,7 @@ def collect_links(args, sess):
     text = " ".join(args.links)
     if args.input:
         text += "\n" + Path(args.input).read_text(encoding="utf-8", errors="ignore")
-    if not PAGE_RE.search(text):
+    if not (PAGE_RE.search(text) or DN_RE.search(text)):
         for url in dict.fromkeys(OTHER_URL_RE.findall(text)):
             try:
                 r = sess.s.get(url, timeout=30)
@@ -228,13 +233,15 @@ def collect_links(args, sess):
                 print(f"Scanned {url} for download links")
             except Exception as e:
                 print(f"Could not open {url}: {e}\n  Save that page with Ctrl+S and pass the .html file with -i.")
+    flat = htmllib.unescape(text)
     seen, out = set(), []
-    for m in PAGE_RE.findall(htmllib.unescape(text)):
-        base = m.split("#")[0]
-        if base.rstrip("/") == BASE.rstrip("/") or base in seen:
-            continue
-        seen.add(base)
-        out.append(Item(m))
+    for regex in (PAGE_RE, DN_RE):
+        for m in regex.findall(flat):
+            base = m.split("#")[0]
+            if base.rstrip("/") == BASE.rstrip("/") or base in seen:
+                continue
+            seen.add(base)
+            out.append(Item(m))
     return out
 
 
@@ -459,7 +466,7 @@ def resolve_datanodes(sess, item):
 
     low = body.lower()
     if "cf-turnstile" in low or "turnstile" in low or "verify you are human" in low:
-        raise RuntimeError(DN_NEEDS_BROWSER)
+        raise NeedBrowser(DN_NEEDS_BROWSER)
 
     form = _dn_form(body)
     if not form:
@@ -489,7 +496,7 @@ def resolve_datanodes(sess, item):
         if links:
             return links[0]
         if "cf-turnstile" in text.lower():
-            raise RuntimeError(DN_NEEDS_BROWSER)
+            raise NeedBrowser(DN_NEEDS_BROWSER)
         nxt = _dn_form(text)
         if not nxt:
             break
@@ -578,7 +585,9 @@ def download_segmented(sess, item, dl, tmp, total, conns, make_bar, cancel):
     def save():
         with lock:
             data = {"total": total, "segs": [list(sg) for sg in segs]}
-        state_file.write_text(json.dumps(data))
+        tmp_state = state_file.with_name(state_file.name + ".tmp")
+        tmp_state.write_text(json.dumps(data))
+        os.replace(tmp_state, state_file)
 
     with make_bar(total, done0) as bar:
         # fewer connections than saved segments: the extra segments wait their turn
