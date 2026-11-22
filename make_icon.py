@@ -1,16 +1,23 @@
-"""Draws icon.ico (the violet download-arrow mark from the app header). Run once: python make_icon.py"""
-from PIL import Image, ImageDraw
+"""Draws icon.ico: the FG monogram used by the app, the exe and the installer.
+Run once: python make_icon.py
+"""
+from PIL import Image, ImageDraw, ImageFont
 
 S = 1024  # draw large, then let Pillow downscale into each .ico size
+INK = (12, 12, 11, 255)
+PAPER = (247, 245, 239, 255)
+ACCENT = (46, 204, 91, 255)
+
 img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
 d = ImageDraw.Draw(img)
-d.rounded_rectangle((32, 32, S - 32, S - 32), radius=230, fill=(109, 77, 255, 255))
-w, white = 92, (255, 255, 255, 255)
-d.line((512, 230, 512, 640), fill=white, width=w)                        # shaft
-d.line((318, 450, 512, 644, 706, 450), fill=white, width=w, joint="curve")  # arrow head
-d.line((262, 800, 762, 800), fill=white, width=w)                        # tray
-for x, y in ((512, 230), (318, 450), (706, 450), (262, 800), (762, 800)):  # round caps
-    d.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=white)
+d.rectangle((0, 0, S, S), fill=INK)
+d.rectangle((0, 0, S - 1, S - 1), outline=ACCENT, width=56)
+
+font = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 480)
+box = d.textbbox((0, 0), "FG", font=font)
+w, h = box[2] - box[0], box[3] - box[1]
+d.text(((S - w) / 2 - box[0], (S - h) / 2 - box[1]), "FG", font=font, fill=PAPER)
+
 img.save("icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 img.resize((256, 256), Image.LANCZOS).save("icon_preview.png")
-print("wrote icon.ico")
+print("wrote icon.ico and icon_preview.png")

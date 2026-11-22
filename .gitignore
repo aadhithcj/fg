@@ -1,4 +1,5 @@
 __pycache__/
+.*
 build/
 dist/
 *.spec
@@ -7,3 +8,8 @@ dist/
 *.part.json
 debug_*
 failed_links.txt
+
+# Private notes & AI context
+CONTEXT.md
+PRODUCT.md
+*.local.*

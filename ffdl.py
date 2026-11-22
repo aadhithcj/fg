@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-ffdl - download manager for fuckingfast.co links
+ffdl - multi-threaded segmented file downloader
 
 Features
-  * Accepts fuckingfast page links, a text/HTML file containing them, or a page URL
-    (e.g. a repack page) that lists them
+  * Accepts direct host links, a text/HTML file containing them, or a page URL
+    that lists them
   * Parallel downloads with progress bars, resume (.part files), retries
-  * Cloudflare handling, in two levels:
-      1. Fast mode: uses curl_cffi so the script's connection looks like Chrome, and
-         reuses the cookies from a real browser window where you pass the check once
-      2. Browser mode: if Cloudflare still blocks the script, the remaining files are
-         downloaded through a real Chrome window automatically (no resume there)
-  * Multi-part archives: checks for missing parts and tells you which one to extract
+  * Session and challenge management
+  * Multi-part archives: checks for missing parts and reports completion status
 
 Setup
   pip install requests tqdm playwright curl_cffi
@@ -19,7 +15,7 @@ Setup
 
 Usage
   python ffdl.py -i links.txt -o .
-  python ffdl.py -i links.txt -o D:\\Games\\MyGame
+  python ffdl.py -i links.txt -o D:/Downloads
   python ffdl.py --browser -i links.txt -o .       # skip fast mode, use the browser
 """
 import argparse
@@ -34,7 +30,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from tqdm import tqdm
 
@@ -48,7 +44,8 @@ except ImportError:
 BASE = "https://fuckingfast.co/"
 DL_RE = re.compile(r"https?://fuckingfast\.co/dl/[^\s\"'<>\\)]+")
 PAGE_RE = re.compile(r"https?://fuckingfast\.co/(?!dl/)[A-Za-z0-9]+(?:#[^\s\"'<>]+)?")
-OTHER_URL_RE = re.compile(r"https?://(?!(?:www\.)?fuckingfast\.co)[^\s\"'<>]+")
+DN_RE = re.compile(r"https?://(?:www\.)?datanodes\.to/(?!download(?:/|$))[A-Za-z0-9]+(?:/[^\s\"'<>]*)?")
+OTHER_URL_RE = re.compile(r"https?://(?!(?:www\.)?(?:fuckingfast\.co|datanodes\.to))[^\s\"'<>]+")
 TITLE_RE = re.compile(r"<title>(.*?)</title>", re.I | re.S)
 STATE_DIR = Path.home() / ".ffdl"
 SESSION_FILE = STATE_DIR / "session.json"
@@ -179,7 +176,7 @@ class Session:
                 wait_past_challenge(page)
                 ua = page.evaluate("navigator.userAgent")
                 cookies = [{k: c[k] for k in ("name", "value", "domain", "path")}
-                           for c in ctx.cookies() if "fuckingfast" in c["domain"]]
+                           for c in ctx.cookies() if "fuckingfast" in c["domain"] or "datanodes" in c["domain"]]
                 ctx.close()
             data = {"user_agent": ua, "cookies": cookies}
             STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -202,7 +199,12 @@ class Item:
     def __init__(self, page_url):
         self.page = page_url.split("#")[0]
         frag = urlparse(page_url).fragment
-        self.name = safe_name(unquote(frag)) if frag else None
+        self.host = "datanodes" if is_dn(self.page) else "fuckingfast"
+        name = safe_name(unquote(frag)) if frag else None
+        if not name and self.host == "datanodes":
+            tail = unquote(urlparse(self.page).path.rstrip("/").rsplit("/", 1)[-1])
+            name = safe_name(tail) if tail and not tail.isdigit() else None
+        self.name = name
         self.id = self.page.rstrip("/").rsplit("/", 1)[-1]
 
 
@@ -216,7 +218,7 @@ def collect_links(args, sess):
                 r = sess.s.get(url, timeout=30)
                 r.raise_for_status()
                 text += "\n" + r.text
-                print(f"Scanned {url} for fuckingfast links")
+                print(f"Scanned {url} for download links")
             except Exception as e:
                 print(f"Could not open {url}: {e}\n  Save that page with Ctrl+S and pass the .html file with -i.")
     seen, out = set(), []
@@ -240,6 +242,10 @@ def page_name(item, body):
     if not item.name:
         t = TITLE_RE.search(body)
         item.name = safe_name(htmllib.unescape(t.group(1))) if t else None
+        if item.host == "datanodes" and item.name:
+            item.name = re.sub(r"^(?:datanodes|download)\s*[|–-]\s*", "", item.name, flags=re.I)
+            item.name = re.sub(r"\s*[|–-]\s*(?:datanodes|download|free file).*$", "", item.name, flags=re.I)
+            item.name = safe_name(item.name)
         item.name = item.name or f"{item.id}.bin"
 
 
@@ -317,6 +323,19 @@ def is_ff(u):
     return host == "fuckingfast.co" or host.endswith(".fuckingfast.co")
 
 
+def is_dn(u):
+    host = urlparse(u).hostname or ""
+    return host == "datanodes.to" or host.endswith(".datanodes.to")
+
+
+def is_supported(u):
+    return is_ff(u) or is_dn(u)
+
+
+def host_label(u):
+    return "datanodes" if is_dn(u) else "fuckingfast" if is_ff(u) else "unknown"
+
+
 def resolve_go(sess, item, body):
     """New-style pages: DOWNLOAD button does hx-post /f/<id>/go.
     First click returns an ad, second returns the file link."""
@@ -344,6 +363,12 @@ def resolve_go(sess, item, body):
 
 
 def resolve(sess, item):
+    if item.host == "datanodes":
+        return resolve_datanodes(sess, item)
+    return resolve_fuckingfast(sess, item)
+
+
+def resolve_fuckingfast(sess, item):
     r = sess.get(item.page, timeout=30)
     if r.status_code == 404:
         raise RuntimeError("file not found (404) - link is dead")
@@ -353,6 +378,116 @@ def resolve(sess, item):
     page_name(item, body)
     check_gone(body)
     return static_dl(item, body) or resolve_go(sess, item, body)
+
+
+# --------------------------------------------------------------------------- datanodes
+FORM_RE = re.compile(r"<form\b([^>]*)>(.*?)</form>", re.I | re.S)
+INPUT_RE = re.compile(r"<input\b([^>]*)>", re.I)
+ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+DN_BAD_HOSTS = ("challenges.cloudflare.com", "cloudflare.com", "google.com", "google-analytics.com",
+                "googletagmanager.com", "doubleclick.net", "gstatic.com", "recaptcha.net")
+DN_NEEDS_BROWSER = ("datanodes is asking for a browser check (Turnstile) - open this part in a browser, "
+                    "or run the CLI with --browser")
+
+
+def _attrs(tag):
+    return {m.group(1).lower(): next(g for g in m.groups()[1:] if g is not None)
+            for m in ATTR_RE.finditer(tag)}
+
+
+def _dn_form(body):
+    """First form carrying a download op, with its hidden fields already collected."""
+    for m in FORM_RE.finditer(body):
+        attrs = _attrs(m.group(1))
+        fields = {}
+        for im in INPUT_RE.finditer(m.group(2)):
+            ia = _attrs(im.group(1))
+            name = ia.get("name")
+            if name and ia.get("type", "").lower() not in ("submit", "button", "image", "file", "checkbox", "radio"):
+                fields[name] = ia.get("value", "")
+        if "op" in fields or "method_free" in fields:
+            return attrs.get("action") or "", fields
+    return None
+
+
+def _dn_direct(u):
+    p = urlparse(u)
+    host = p.hostname or ""
+    if p.scheme not in ("http", "https") or not host:
+        return False
+    if host in ("datanodes.to", "www.datanodes.to"):
+        return False
+    if any(host == b or host.endswith("." + b) for b in DN_BAD_HOSTS):
+        return False
+    return not p.path.lower().endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+                                        ".ico", ".webp", ".woff", ".woff2", ".json", ".xml"))
+
+
+def _dn_links(text):
+    clean = htmllib.unescape((text or "").replace("\\/", "/"))
+    out = []
+    for u in URL_RE.findall(clean):
+        u = u.rstrip(").,;")
+        if _dn_direct(u) and u not in out:
+            out.append(u)
+    return out
+
+
+def resolve_datanodes(sess, item):
+    """Best-effort HTTP resolution of a datanodes.to share page.
+
+    datanodes is an XFileSharing-style host: one POST to the free-download form,
+    then the step-2 form returns the direct CDN URL in a Location header or body.
+    Turnstile-protected pages cannot be solved without a real browser, so they
+    fail with a message that says exactly that instead of hanging.
+    """
+    r = sess.get(item.page, timeout=30)
+    if r.status_code == 404:
+        raise RuntimeError("file not found (404) - link is dead")
+    r.raise_for_status()
+    body = r.text
+    r.close()
+    page_name(item, body)
+    check_gone(body)
+
+    low = body.lower()
+    if "cf-turnstile" in low or "turnstile" in low or "verify you are human" in low:
+        raise RuntimeError(DN_NEEDS_BROWSER)
+
+    form = _dn_form(body)
+    if not form:
+        raise RuntimeError("datanodes gave no download form - the page layout may have changed")
+
+    action, fields = form
+    for step in range(2):
+        data = dict(fields)
+        data.setdefault("method_free", "Free Download >>")
+        if data.get("op") == "download2":
+            data.setdefault("down_direct", "1")
+        target = urljoin(item.page, action) if action else item.page
+        if step:
+            time.sleep(2)  # let the free-download countdown settle
+        r = sess.post(target, data=data, headers={"Referer": item.page, "Origin": "https://datanodes.to",
+                                                  "Accept": "text/html,application/xhtml+xml,*/*"},
+                      allow_redirects=False, timeout=30)
+        loc = r.headers.get("Location") or ""
+        ctype = r.headers.get("Content-Type") or ""
+        text = r.text if "text" in ctype else ""
+        r.close()
+        if loc:
+            loc = urljoin(item.page, loc)
+            if _dn_direct(loc):
+                return loc
+        links = _dn_links(text)
+        if links:
+            return links[0]
+        if "cf-turnstile" in text.lower():
+            raise RuntimeError(DN_NEEDS_BROWSER)
+        nxt = _dn_form(text)
+        if not nxt:
+            break
+        action, fields = nxt
+    raise RuntimeError("datanodes gave no file link - try this part in a browser")
 
 
 # --------------------------------------------------------------------------- segmented download
@@ -721,7 +856,7 @@ def multipart_report(items, outdir):
 
 # --------------------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="Download manager for fuckingfast.co links")
+    ap = argparse.ArgumentParser(description="Multi-threaded segmented download manager")
     ap.add_argument("links", nargs="*", help="links, or any text containing them")
     ap.add_argument("-i", "--input", help="text/HTML file containing links")
     ap.add_argument("-o", "--out", default="downloads", help="output folder")
@@ -740,7 +875,7 @@ def main():
     sess = Session(args.channel)
     items = collect_links(args, sess)
     if not items:
-        sys.exit("No fuckingfast.co links found. Put the fuckingfast part links in the file "
+        sys.exit("No supported download links found. Put the part links in the file "
                  "(one per line), or a page URL that lists them.")
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
