@@ -25,7 +25,7 @@ FG Downloader accelerates large file downloads using concurrent HTTP Range segme
 
 ### Setup
 ```bash
-git clone https://github.com/your-username/fg-downloader.git
+git clone https://github.com/aadhithcj/fg-downloader.git
 cd fg-downloader
 pip install -r requirements.txt
 ```
